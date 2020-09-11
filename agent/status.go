@@ -41,9 +41,9 @@ func toMemberStatus(status string) pb.MemberStatus_Type {
 }
 
 // unknownNodeStatus creates an `unknown` node status for a node specified with member.
-func unknownNodeStatus(member membership.ClusterMember) *pb.NodeStatus {
+func unknownNodeStatus(member membership.Member) *pb.NodeStatus {
 	return &pb.NodeStatus{
-		Name:         member.Name(),
+		Name:         member.Name,
 		Status:       pb.NodeStatus_Unknown,
 		MemberStatus: statusFromMember(member),
 	}
@@ -66,24 +66,25 @@ func emptySystemStatus() *pb.SystemStatus {
 }
 
 // statusFromMember returns new member status value for the specified cluster member.
-func statusFromMember(member membership.ClusterMember) *pb.MemberStatus {
+func statusFromMember(member membership.Member) *pb.MemberStatus {
 	return &pb.MemberStatus{
-		Name:   member.Name(),
-		Status: toMemberStatus(member.Status()),
-		Tags:   member.Tags(),
-		Addr:   fmt.Sprintf("%s:%d", member.Addr().String(), member.Port()),
+		Name: member.Name,
+		// TODO: Remove member status?
+		Status: pb.MemberStatus_Alive,
+		Tags:   member.Tags,
+		Addr:   member.Addr,
 	}
 }
 
 // setSystemStatus combines the status of individual nodes into the status of the
 // cluster as a whole.
 // It additionally augments the cluster status with human-readable summary.
-func setSystemStatus(status *pb.SystemStatus, members []membership.ClusterMember) {
+func setSystemStatus(status *pb.SystemStatus, members []membership.Member) {
 	var foundMaster bool
 
 	missing := make(memberMap)
 	for _, member := range members {
-		missing[member.Name()] = struct{}{}
+		missing[member.Name] = struct{}{}
 	}
 
 	status.Status = pb.SystemStatus_Running

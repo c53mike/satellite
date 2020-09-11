@@ -346,8 +346,6 @@ type Agent interface {
 	Start() error
 	// Close stops background activity and releases resources.
 	Close() error
-	// Join makes an attempt to join a cluster specified by the list of peers.
-	Join(peers []string) error
 	// Time reports the current server time.
 	Time() time.Time
 	// LocalStatus reports the health status of the local agent node.

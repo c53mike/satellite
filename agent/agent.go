@@ -38,7 +38,6 @@ import (
 
 	"github.com/gravitational/trace"
 	"github.com/gravitational/ttlmap/v2"
-	serf "github.com/hashicorp/serf/client"
 	"github.com/jonboulle/clockwork"
 	log "github.com/sirupsen/logrus"
 )
@@ -52,9 +51,6 @@ type Config struct {
 	// Name must match the name of the local serf agent so that the agent
 	// can match itself to a serf member.
 	Name string
-
-	// NodeName is the name assigned by Kubernetes to this node
-	NodeName string
 
 	// RPCAddrs is a list of addresses agent binds to for RPC traffic.
 	//
@@ -72,19 +68,11 @@ type Config struct {
 	// KeyFile specifies the path to TLS certificate key file
 	KeyFile string
 
-	// SerfConfig specifies serf client configuration.
-	SerfConfig serf.Config
-
 	// MetricsAddr specifies the address to listen on for web interface and telemetry for Prometheus metrics.
 	MetricsAddr string
 
 	// DebugSocketPath specifies the location of the unix domain socket for debug endpoint
 	DebugSocketPath string
-
-	// Peers lists the nodes that are part of the initial serf cluster configuration.
-	// This is not a final cluster configuration and new nodes or node updates
-	// are still possible.
-	Peers []string
 
 	// Set of tags for the agent.
 	// Tags is a trivial means for adding extra semantic information to an agent.
@@ -98,6 +86,9 @@ type Config struct {
 
 	// Cache is a short-lived storage used by the agent to persist latest health stats.
 	cache.Cache
+
+	// DialRPC is a factory function to create clients to other agents.
+	DialRPC client.DialRPC
 }
 
 // CheckAndSetDefaults validates this configuration object.
@@ -129,6 +120,9 @@ func (r *Config) CheckAndSetDefaults() error {
 	if r.Clock == nil {
 		r.Clock = clockwork.NewRealClock()
 	}
+	if r.DialRPC == nil {
+		r.DialRPC = client.DefaultDialRPC(r.CAFile, r.CertFile, r.KeyFile)
+	}
 	return nil
 }
 
@@ -137,7 +131,7 @@ type agent struct {
 	Config
 
 	// ClusterMembership provides access to cluster membership service.
-	ClusterMembership membership.ClusterMembership
+	ClusterMembership membership.Cluster
 
 	// ClusterTimeline keeps track of all timeline events in the cluster. This
 	// timeline is only used by members that have the role 'master'.
@@ -156,10 +150,6 @@ type agent struct {
 	// RPC server used by agent for client communication as well as
 	// status sync with other agents.
 	rpc RPCServer
-
-	// dialRPC is a factory function to create clients to other agents.
-	// If future, agent address discovery will happen through serf.
-	dialRPC client.DialRPC
 
 	// localStatus is the last obtained local node status.
 	localStatus *pb.NodeStatus
@@ -186,11 +176,6 @@ type agent struct {
 func New(config *Config) (*agent, error) {
 	if err := config.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
-	}
-
-	serfClient, err := initSerfClient(config.SerfConfig, config.Tags)
-	if err != nil {
-		return nil, trace.Wrap(err, "failed to initialize serf client")
 	}
 
 	// TODO: do we need to initialize metrics listener in constructor?
@@ -234,10 +219,8 @@ func New(config *Config) (*agent, error) {
 	g := ctxgroup.WithContext(ctx)
 	agent := &agent{
 		Config:                  *config,
-		ClusterMembership:       serfClient,
 		ClusterTimeline:         clusterTimeline,
 		LocalTimeline:           localTimeline,
-		dialRPC:                 client.DefaultDialRPC(config.CAFile, config.CertFile, config.KeyFile),
 		statusQueryReplyTimeout: statusQueryReplyTimeout,
 		localStatus:             emptyNodeStatus(config.Name),
 		metricsListener:         metricsListener,
@@ -252,19 +235,6 @@ func New(config *Config) (*agent, error) {
 		return nil, trace.Wrap(err, "failed to create RPC server")
 	}
 	return agent, nil
-}
-
-// initSerfClient initializes a new serf client and modifies the client with
-// the provided tags.
-func initSerfClient(config serf.Config, tags map[string]string) (*membership.RetryingClient, error) {
-	client, err := membership.NewSerfClient(config)
-	if err != nil {
-		return nil, trace.Wrap(err, "failed to connect to serf")
-	}
-	if err = client.UpdateTags(tags, nil); err != nil {
-		return nil, trace.Wrap(err, "failed to update serf agent tags")
-	}
-	return client, nil
 }
 
 // initTimeline initializes a new sqlite timeline. fileName specifies the
@@ -302,29 +272,19 @@ func (r *agent) IsMember() bool {
 		log.WithError(err).Warn("Failed to retrieve members.")
 		return false
 	}
+
 	// if we're the only one, consider that we're not in the cluster yet
 	// (cause more often than not there are more than 1 member)
-	if len(members) == 1 && members[0].Name() == r.Name {
+	if len(members) == 1 && members[0].Name == r.Name {
 		return false
 	}
 	for _, member := range members {
-		if member.Name() == r.Name {
+		if member.Name == r.Name {
 			return true
 		}
 	}
+
 	return false
-}
-
-// Join attempts to join a serf cluster identified by peers.
-func (r *agent) Join(peers []string) error {
-	noReplay := false
-	numJoined, err := r.ClusterMembership.Join(peers, noReplay)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	log.Infof("Joined %d nodes.", numJoined)
-	return nil
 }
 
 // Close stops all background activity and releases the agent's resources.
@@ -333,9 +293,6 @@ func (r *agent) Close() (err error) {
 	r.cancel()
 	var errors []error
 	if err := r.g.Wait(); err != nil && !utils.IsContextCanceledError(err) {
-		errors = append(errors, err)
-	}
-	if err := r.ClusterMembership.Close(); err != nil {
 		errors = append(errors, err)
 	}
 	return trace.NewAggregate(errors...)
@@ -594,7 +551,7 @@ func (r *agent) collectStatus(ctx context.Context) (systemStatus *pb.SystemStatu
 
 	statusCh := make(chan *statusResponse, len(members))
 	for _, member := range members {
-		if r.Name == member.Name() {
+		if r.Name == member.Name {
 			go r.getLocalStatus(ctxNode, statusCh)
 		} else {
 			go r.getStatusFrom(ctxNode, member, statusCh)
@@ -609,7 +566,7 @@ L:
 			nodeStatus := status.NodeStatus
 			if status.err != nil {
 				log.Debugf("Failed to query node %s(%v) status: %v.",
-					status.member.Name(), status.member.Addr(), status.err)
+					status.member.Name, status.member.Addr, status.err)
 				nodeStatus = unknownNodeStatus(status.member)
 			}
 			systemStatus.Nodes = append(systemStatus.Nodes, nodeStatus)
@@ -628,7 +585,7 @@ L:
 
 // collectLocalStatus executes monitoring tests on the local node.
 func (r *agent) collectLocalStatus(ctx context.Context) (status *pb.NodeStatus, err error) {
-	local, err := r.ClusterMembership.FindMember(r.Name)
+	local, err := r.ClusterMembership.Member(r.Name)
 	if err != nil {
 		return nil, trace.Wrap(err, "failed to query local serf member")
 	}
@@ -656,7 +613,7 @@ func (r *agent) collectLocalStatus(ctx context.Context) (status *pb.NodeStatus, 
 // getLocalStatus obtains local node status.
 func (r *agent) getLocalStatus(ctx context.Context, respc chan<- *statusResponse) {
 	// TODO: restructure code so that local member is not needed here.
-	local, err := r.ClusterMembership.FindMember(r.Name)
+	local, err := r.ClusterMembership.Member(r.Name)
 	if err != nil {
 		respc <- &statusResponse{err: err}
 		return
@@ -688,11 +645,11 @@ func (r *agent) notifyMasters(ctx context.Context) error {
 
 	// TODO: async
 	for _, member := range members {
-		if !hasRoleMaster(member.Tags()) {
+		if !hasRoleMaster(member.Tags) {
 			continue
 		}
 		if err := r.notifyMaster(ctx, member, events); err != nil {
-			log.WithError(err).Debugf("Failed to notify %s of new timeline events.", member.Name())
+			log.WithError(err).Debugf("Failed to notify %s of new timeline events.", member.Name)
 		}
 	}
 
@@ -700,8 +657,8 @@ func (r *agent) notifyMasters(ctx context.Context) error {
 }
 
 // notifyMaster push new timeline events to the specified member.
-func (r *agent) notifyMaster(ctx context.Context, member membership.ClusterMember, events []*pb.TimelineEvent) error {
-	client, err := member.Dial(ctx, r.CAFile, r.CertFile, r.KeyFile)
+func (r *agent) notifyMaster(ctx context.Context, member membership.Member, events []*pb.TimelineEvent) error {
+	client, err := r.DialRPC(ctx, member.Addr)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -725,8 +682,8 @@ func (r *agent) notifyMaster(ctx context.Context, member membership.ClusterMembe
 }
 
 // getStatusFrom obtains node status from the node identified by member.
-func (r *agent) getStatusFrom(ctx context.Context, member membership.ClusterMember, respc chan<- *statusResponse) {
-	client, err := member.Dial(ctx, r.CAFile, r.CertFile, r.KeyFile)
+func (r *agent) getStatusFrom(ctx context.Context, member membership.Member, respc chan<- *statusResponse) {
+	client, err := r.DialRPC(ctx, member.Addr)
 	resp := &statusResponse{member: member}
 	if err != nil {
 		resp.err = trace.Wrap(err)
@@ -784,6 +741,6 @@ func hasRoleMaster(tags map[string]string) bool {
 // health status on the specified serf node.
 type statusResponse struct {
 	*pb.NodeStatus
-	member membership.ClusterMember
+	member membership.Member
 	err    error
 }
