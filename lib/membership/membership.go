@@ -14,48 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package membership provides interface for cluster membership management.
+// Package membership provides an interface for polling cluster membership
 package membership
 
-import (
-	"context"
-	"net"
-
-	"github.com/gravitational/satellite/lib/rpc/client"
-
-	"github.com/hashicorp/serf/coordinate"
-)
-
-// ClusterMembership is interface to interact with a cluster membership service.
-type ClusterMembership interface {
+// Cluster interface allows cluster membership polling.
+type Cluster interface {
 	// Members returns the list of cluster members.
-	Members() ([]ClusterMember, error)
-	// FindMember finds the member with the specified name.
-	FindMember(name string) (ClusterMember, error)
-	// Close closes the client.
-	Close() error
-	// Join attempts to join an existing cluster identified by peers.
-	// Replay controls if previous user events are replayed once this node has joined the cluster.
-	// Returns the number of nodes joined.
-	Join(peers []string, replay bool) (int, error)
-	// UpdateTags will modify the tags on a running member.
-	UpdateTags(tags map[string]string, delTags []string) error
-	// GetCoordinate returns the Serf Coordinate for a specific node
-	GetCoordinate(node string) (*coordinate.Coordinate, error)
+	Members() ([]Member, error)
+	// Member returns the member with the specified name.
+	Member(name string) (Member, error)
 }
 
-// ClusterMember is interface to interact with a cluster member.
-type ClusterMember interface {
-	// Dial attempts to create client connect to member.
-	Dial(ctx context.Context, caFile, certFile, keyFile string) (client.Client, error)
-	// Name gets the member's name.
-	Name() string
-	// Addr gets the member's address.
-	Addr() net.IP
-	// Port gets the member's gossip port.
-	Port() uint16
-	// Tags gets the member's tags.
-	Tags() map[string]string
-	// Status gets the member's status.
-	Status() string
+// Member contains information to identify and access a member.
+type Member struct {
+	// Name is the member's name.
+	Name string
+	// Addr is the member's IP address.
+	Addr string
+	// Tags is the list of tags held by the member.
+	Tags map[string]string
 }
