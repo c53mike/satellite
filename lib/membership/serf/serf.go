@@ -40,6 +40,9 @@ func NewCluster(config *serf.Config) (*Cluster, error) {
 	if config == nil {
 		return nil, trace.BadParameter("serf config must be provided")
 	}
+	if config.Addr == "" {
+		return nil, trace.BadParameter("serf addr must be provided")
+	}
 	return &Cluster{
 		config: config,
 	}, nil
@@ -68,11 +71,7 @@ func (r *Cluster) members() ([]membership.Member, error) {
 
 	clusterMembers := make([]membership.Member, len(serfMembers))
 	for i, serfMember := range serfMembers {
-		clusterMembers[i] = membership.Member{
-			Name: serfMember.Name,
-			Addr: serfMember.Addr.String(),
-			Tags: serfMember.Tags,
-		}
+		clusterMembers[i] = membership.NewMember(serfMember.Name, serfMember.Addr.String(), serfMember.Tags)
 	}
 
 	return clusterMembers, nil

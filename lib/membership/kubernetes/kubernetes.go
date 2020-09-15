@@ -59,12 +59,12 @@ func (r *Config) checkAndSetDefaults() error {
 //
 // Implementes membership.Cluster
 type Cluster struct {
-	config Config
+	config *Config
 	client kubernetes.Interface
 }
 
 // NewCluster returns a new kubernetes cluster.
-func NewCluster(config Config) (*Cluster, error) {
+func NewCluster(config *Config) (*Cluster, error) {
 	if err := config.checkAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err, "invalid configuration")
 	}
@@ -83,14 +83,6 @@ func NewCluster(config Config) (*Cluster, error) {
 // Members lists the members deployed in the kubernetes cluster.
 // Returns NotFound if no members are found.
 func (r *Cluster) Members() (members []membership.Member, err error) {
-	return r.members()
-}
-
-// members returns the list of cluster members matching the configured
-// namespace and label.
-// Returns NotFound if there are no pods found for the configured namespace and
-// label.
-func (r *Cluster) members() (members []membership.Member, err error) {
 	list, err := r.client.CoreV1().Pods(r.config.Namespace).List(metav1.ListOptions{
 		LabelSelector: r.config.LabelSelector,
 	})
@@ -100,11 +92,7 @@ func (r *Cluster) members() (members []membership.Member, err error) {
 
 	members = make([]membership.Member, len(list.Items))
 	for i, pod := range list.Items {
-		members[i] = membership.Member{
-			Name: pod.Name,
-			Addr: pod.Status.PodIP,
-			Tags: pod.Annotations,
-		}
+		members[i] = membership.NewMember(pod.Name, pod.Status.PodIP, pod.Annotations)
 	}
 
 	return members, nil
@@ -114,16 +102,9 @@ func (r *Cluster) members() (members []membership.Member, err error) {
 // Returns NotFound if the specified member is not deployed in the kubernetes
 // cluster.
 func (r *Cluster) Member(name string) (member membership.Member, err error) {
-	members, err := r.members()
+	pod, err := r.client.CoreV1().Pods(r.config.Namespace).Get(name, metav1.GetOptions{})
 	if err != nil {
-		return member, trace.Wrap(err, "failed to get cluster members")
+		return member, utils.ConvertError(err)
 	}
-
-	for _, member := range members {
-		if member.Name == name {
-			return member, nil
-		}
-	}
-
-	return member, trace.NotFound("member %q is not an active member of the cluster", name)
+	return membership.NewMember(pod.Name, pod.Status.PodIP, pod.Annotations), nil
 }

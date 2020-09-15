@@ -27,6 +27,7 @@ import (
 
 	pb "github.com/gravitational/satellite/agent/proto/agentpb"
 	debugpb "github.com/gravitational/satellite/agent/proto/debug"
+	pingpb "github.com/gravitational/satellite/agent/proto/ping"
 	"github.com/gravitational/satellite/lib/rpc"
 
 	"github.com/gravitational/trace"
@@ -85,6 +86,8 @@ type Client interface {
 	UpdateLocalTimeline(context.Context, *pb.UpdateRequest) (*pb.UpdateResponse, error)
 	// Profile streams the debug profile specified in req
 	Profile(ctx context.Context, req *debugpb.ProfileRequest) (debugpb.Debug_ProfileClient, error)
+	// Ping pings the server.
+	Ping(ctx context.Context, req *pingpb.PingRequest) (*pingpb.PingResponse, error)
 	// Close closes the RPC client connection.
 	Close() error
 }
@@ -92,6 +95,7 @@ type Client interface {
 type client struct {
 	pb.AgentClient
 	debugpb.DebugClient
+	pingpb.PingClient
 	conn        *grpc.ClientConn
 	callOptions []grpc.CallOption
 }
@@ -212,6 +216,15 @@ func (r *client) UpdateLocalTimeline(ctx context.Context, req *pb.UpdateRequest)
 // Profile streams the debug profile specified in req
 func (r *client) Profile(ctx context.Context, req *debugpb.ProfileRequest) (debugpb.Debug_ProfileClient, error) {
 	resp, err := r.DebugClient.Profile(ctx, req, r.callOptions...)
+	if err != nil {
+		return nil, ConvertGRPCError(err)
+	}
+	return resp, nil
+}
+
+// Ping pings the server.
+func (r *client) Ping(ctx context.Context, req *pingpb.PingRequest) (*pingpb.PingResponse, error) {
+	resp, err := r.PingClient.Ping(ctx, req, r.callOptions...)
 	if err != nil {
 		return nil, ConvertGRPCError(err)
 	}

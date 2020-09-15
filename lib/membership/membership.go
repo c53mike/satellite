@@ -34,3 +34,26 @@ type Member struct {
 	// Tags is the list of tags held by the member.
 	Tags map[string]string
 }
+
+// NewMember constructs a new Member.
+func NewMember(name, addr string, tags map[string]string) Member {
+	return Member{
+		Name: name,
+		Addr: addr,
+		Tags: tags,
+	}
+}
+
+// IsMaster returns true if member has role 'master'
+func (r Member) IsMaster() bool {
+	role, exists := r.Tags["role"]
+	return exists && Role(role) == RoleMaster
+}
+
+// Role describes the agent's server role.
+type Role string
+
+const (
+	RoleMaster Role = "master"
+	RoleNode        = "node"
+)
