@@ -24,84 +24,88 @@ import (
 )
 
 const (
-	// latencyStatsCapacity sets the number of TTLMaps that can be stored; this will be the size of the cluster -1
-	latencyStatsCapacity = 1000
-	// latencyStatsTTLSeconds specifies how long check results will be kept before being dropped
-	latencyStatsTTLSeconds = 3600 // 1 hour
-	// latencyStatsSlidingWindowSize specifies the number of retained check results
-	latencyStatsSlidingWindowSize = 20
+	// rttStatsCapacity sets the number of TTLMaps that can be stored; this will be the size of the cluster -1
+	rttStatsCapacity = 1000
+	// rttStatsTTLSeconds specifies how long check results will be kept before being dropped
+	rttStatsTTLSeconds = 300 // 5 minutes
+	// rttStatsSlidingWindowSize specifies the number of retained check results
+	rttStatsSlidingWindowSize = 20
 )
 
-// latencyCache caches the latency stats for nodes in the cluster.
-type latencyCache struct {
+// rttCache caches the rtt stats for nodes in the cluster.
+// Exported methods are safe for concurrent use.
+type rttCache struct {
 	sync.Mutex
-	latencyStats *ttlmap.TTLMap
+	rttStats *ttlmap.TTLMap
 }
 
-// newLatencyCache constructs a new latencyCache.
-func newLatencyCache() *latencyCache {
-	return &latencyCache{
-		latencyStats: ttlmap.NewTTLMap(latencyStatsCapacity),
+// newRTTCache constructs a new rttCache.
+func newRTTCache() *rttCache {
+	return &rttCache{
+		rttStats: ttlmap.NewTTLMap(rttStatsCapacity),
 	}
 }
 
-// Get gets the cached latency stats for the node specified by the provided name.
-func (r *latencyCache) Get(name string) (latencies []int64, err error) {
+// Get gets the cached RTT stats for the node specified by the provided name.
+func (r *rttCache) Get(name string) (rtts []int64, err error) {
 	r.Lock()
 	defer r.Unlock()
 	return r.get(name)
 }
 
-func (r *latencyCache) get(name string) (latencies []int64, err error) {
-	value, exists := r.latencyStats.Get(name)
+func (r *rttCache) get(name string) (rtts []int64, err error) {
+	value, exists := r.rttStats.Get(name)
 	if !exists {
-		return latencies, trace.NotFound("no latency stats found for node %q", name)
+		return rtts, trace.NotFound("no RTT stats found for node %s", name)
 	}
 
-	latencies, ok := value.([]int64)
+	rtts, ok := value.([]int64)
 	if !ok {
-		return latencies, trace.BadParameter("couldn't parse node latency as []int64 on %q", name)
+		return rtts, trace.BadParameter("couldn't parse node RTT as []int64 on %s", name)
 	}
 
-	return latencies, nil
+	return rtts, nil
 }
 
-// Set sets the latency stats for the node specified by the provided name.
-func (r *latencyCache) Set(name string, latencies []int64) error {
+// Set sets the RTT stats for the node specified by the provided name.
+func (r *rttCache) Set(name string, rtts []int64) error {
 	r.Lock()
 	defer r.Unlock()
-	return r.set(name, latencies)
+	return r.set(name, rtts)
 }
 
-func (r *latencyCache) set(name string, latencies []int64) error {
-	if err := r.latencyStats.Set(name, latencies, latencyStatsTTLSeconds); err != nil {
-		return trace.Wrap(err, "failed to set latencies stats")
+func (r *rttCache) set(name string, rtts []int64) error {
+	if err := r.rttStats.Set(name, rtts, rttStatsTTLSeconds); err != nil {
+		return trace.Wrap(err, "failed to set RTTs stats")
 	}
 	return nil
 }
 
-// Append appends the latency to the latency status of the node specified by
+// Append appends the RTT to the RTT stats of the node specified by
 // the provided name.
-func (r *latencyCache) Append(name string, latency int64) error {
+func (r *rttCache) Append(name string, rtt int64) error {
 	r.Lock()
 	defer r.Unlock()
 
-	latencies, err := r.get(name)
-	if err != nil {
-		return trace.Wrap(err, "failed to get latency stats for %q", name)
+	rtts, err := r.get(name)
+	if err != nil && !trace.IsNotFound(err) {
+		return trace.Wrap(err, "failed to get RTT stats for %s", name)
+	}
+	if trace.IsNotFound(err) {
+		rtts = make([]int64, rttStatsSlidingWindowSize)
 	}
 
-	if len(latencies) >= latencyStatsSlidingWindowSize {
+	if len(rtts) >= rttStatsSlidingWindowSize {
 		// keep the slice within the sliding window size
 		// slidingWindowSize is -1 because another element will be added a few lines below
-		latencies = latencies[1:latencyStatsSlidingWindowSize]
+		rtts = rtts[1:rttStatsSlidingWindowSize]
 	}
 
-	latencies = append(latencies, latency)
+	rtts = append(rtts, rtt)
 
-	err = r.set(name, latencies)
+	err = r.set(name, rtts)
 	if err != nil {
-		return trace.Wrap(err, "failed to set latency stats for %q", name)
+		return trace.Wrap(err, "failed to set RTT stats for %s", name)
 	}
 
 	return nil
