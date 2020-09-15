@@ -116,7 +116,7 @@ func (s *TimeDriftSuite) TestTimeDriftChecker(c *C) {
 
 	for _, tc := range tests {
 		comment := Commentf(tc.comment)
-		checker, err := NewChecker(Config{
+		checker, err := NewChecker(&Config{
 			NodeName: node1,
 			Cluster:  tc.cluster,
 			DialRPC:  tc.cluster.dial,

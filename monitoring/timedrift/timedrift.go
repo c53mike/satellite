@@ -85,13 +85,13 @@ func (r *Config) checkAndSetDefaults() error {
 // Implements health.Checker
 type checker struct {
 	// Config contains checker configuration.
-	Config
+	*Config
 	// FieldLogger is used for logging.
 	logrus.FieldLogger
 }
 
 // NewChecker constructs a new timedrift checker.
-func NewChecker(config Config) (health.Checker, error) {
+func NewChecker(config *Config) (health.Checker, error) {
 	if err := config.checkAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
 	}
