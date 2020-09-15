@@ -27,7 +27,6 @@ import (
 	"github.com/gravitational/satellite/agent/backend/inmemory"
 	"github.com/gravitational/satellite/agent/health"
 	pb "github.com/gravitational/satellite/agent/proto/agentpb"
-	debugpb "github.com/gravitational/satellite/agent/proto/debug"
 	"github.com/gravitational/satellite/lib/history/memory"
 	"github.com/gravitational/satellite/lib/membership"
 	"github.com/gravitational/satellite/lib/rpc/client"
@@ -528,8 +527,8 @@ func (r *AgentSuite) newAgent(config testAgentConfig) (*agent, error) {
 		Cache:    inmemory.New(),
 		Name:     config.node,
 		Clock:    config.clock,
-		Tags:     tags{"role": string(config.role)},
 		DialRPC:  config.membership.dial,
+		Cluster:  config.membership,
 	}
 
 	if err := agentConfig.CheckAndSetDefaults(); err != nil {
@@ -542,7 +541,6 @@ func (r *AgentSuite) newAgent(config testAgentConfig) (*agent, error) {
 	}
 
 	agent := &agent{
-		ClusterMembership:       config.membership,
 		ClusterTimeline:         memory.NewTimeline(config.clock, timelineCapacity),
 		LocalTimeline:           memory.NewTimeline(config.clock, timelineCapacity),
 		Config:                  agentConfig,
@@ -552,7 +550,10 @@ func (r *AgentSuite) newAgent(config testAgentConfig) (*agent, error) {
 		statusQueryReplyTimeout: statusQueryReplyTimeout,
 	}
 
-	config.membership.addAgent(agent)
+	config.membership.addAgent(&agentWithRole{
+		agent: agent,
+		role:  config.role,
+	})
 
 	return agent, nil
 }
@@ -629,12 +630,12 @@ func (r byName) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
 func (r byName) Less(i, j int) bool { return r[i].Name < r[j].Name }
 
 type mockClusterMembership struct {
-	agents map[string]*agent
+	agents map[string]*agentWithRole
 }
 
 func newMockClusterMembership() *mockClusterMembership {
 	return &mockClusterMembership{
-		agents: make(map[string]*agent),
+		agents: make(map[string]*agentWithRole),
 	}
 }
 
@@ -656,7 +657,7 @@ func (r mockClusterMembership) Member(name string) (member membership.Member, er
 }
 
 // addAgent adds the agent as a member to the mock cluster.
-func (r mockClusterMembership) addAgent(agent *agent) {
+func (r mockClusterMembership) addAgent(agent *agentWithRole) {
 	r.agents[agent.Name] = agent
 }
 
@@ -670,20 +671,26 @@ func (r mockClusterMembership) dial(_ context.Context, name string) (client.Clie
 }
 
 // memberFromAgent constructs a new ClusterMember from the provided agent.
-func memberFromAgent(agent *agent) membership.Member {
+func memberFromAgent(agent *agentWithRole) membership.Member {
 	return membership.Member{
 		Name: agent.Name,
 		Addr: agent.Name, // mock dial function will use name to dial node
-		Tags: agent.Tags,
+		Tags: map[string]string{"role": string(agent.role)},
 	}
 }
 
+type agentWithRole struct {
+	*agent
+	role Role
+}
+
 type mockClient struct {
+	client.Client
 	agent *agent
 }
 
-func newMockClient(agent *agent) (client.Client, error) {
-	return &mockClient{agent: agent}, nil
+func newMockClient(agent *agentWithRole) (client.Client, error) {
+	return &mockClient{agent: agent.agent}, nil
 }
 
 // Status reports the health status of a serf cluster.
@@ -742,10 +749,6 @@ func (r *mockClient) UpdateLocalTimeline(ctx context.Context, req *pb.UpdateRequ
 		return nil, utils.GRPCError(err)
 	}
 	return &pb.UpdateResponse{}, nil
-}
-
-func (r *mockClient) Profile(context.Context, *debugpb.ProfileRequest) (debugpb.Debug_ProfileClient, error) {
-	return nil, trace.NotImplemented("not implemented for mockClient")
 }
 
 // Close closes the RPC client connection.

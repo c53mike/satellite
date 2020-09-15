@@ -230,7 +230,7 @@ func (Codegen) Grpc() error {
 		fmt.Sprintf("--volume=%v:/go/src/github.com/gravitational/satellite:delegated", srcDir()),
 		fmt.Sprint("satellite-grpc-buildbox:", version()),
 		"sh", "-c",
-		"cd /go/src/github.com/gravitational/satellite/ && go run mage.go internal:grpcAgent internal:grpcDebug",
+		"cd /go/src/github.com/gravitational/satellite/ && go run mage.go internal:grpcAgent internal:grpcDebug internal:grpcPing",
 	))
 }
 
@@ -267,6 +267,24 @@ func (Internal) GrpcDebug() error {
 		return trace.Wrap(err)
 	}
 	args := []string{fmt.Sprint("-I=.:", os.Getenv("PROTO_INCLUDE")), "--gofast_out=plugins=grpc,Mgogo.proto=github.com/gogo/protobuf/gogoproto:."}
+	return trace.Wrap(sh.RunV(
+		"protoc",
+		append(args, protoFiles...)...,
+	))
+}
+
+// GrpcPing (Internal) generates protobuf stubs for Ping server
+func (Internal) GrpcPing() error {
+	fmt.Println("\n=====> Running protoc ... \n")
+	err := os.Chdir(filepath.Join(srcDir(), "agent/proto"))
+	if err != nil {
+		return trace.ConvertSystemError(err)
+	}
+	protoFiles, err := filepath.Glob("ping/*.proto")
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	args := []string{fmt.Sprint("-I=.:", os.Getenv("PROTO_INCLUDE")), "--gofast_out=plugins=grpc:."}
 	return trace.Wrap(sh.RunV(
 		"protoc",
 		append(args, protoFiles...)...,

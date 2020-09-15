@@ -29,6 +29,7 @@ import (
 	"github.com/gravitational/satellite/agent/health"
 	pb "github.com/gravitational/satellite/agent/proto/agentpb"
 	debugpb "github.com/gravitational/satellite/agent/proto/debug"
+	pingpb "github.com/gravitational/satellite/agent/proto/ping"
 	"github.com/gravitational/satellite/lib/rpc"
 	"github.com/gravitational/satellite/utils"
 
@@ -127,6 +128,11 @@ func (r *server) UpdateLocalTimeline(ctx context.Context, req *pb.UpdateRequest)
 	return &pb.UpdateResponse{}, nil
 }
 
+// Ping returns a ping response.
+func (r *server) Ping(ctx context.Context, req *pingpb.PingRequest) (*pingpb.PingResponse, error) {
+	return &pingpb.PingResponse{}, nil
+}
+
 // Stop stops the grpc server and any additional http servers.
 // TODO: modify Stop to return error
 func (r *server) Stop() {
@@ -180,6 +186,7 @@ func newRPCServer(agent *agent, caFile, certFile, keyFile string, rpcAddrs []str
 	backend := grpc.NewServer(grpc.Creds(creds))
 	server := &server{agent: agent, Server: backend}
 	pb.RegisterAgentServer(backend, server)
+	pingpb.RegisterPingServer(backend, server)
 
 	// statusHandler is a convenience multiplexer for both gRPC and HTTPS queries.
 	// The HTTPS endpoint returns the cluster status as JSON

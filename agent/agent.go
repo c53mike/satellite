@@ -74,10 +74,6 @@ type Config struct {
 	// DebugSocketPath specifies the location of the unix domain socket for debug endpoint
 	DebugSocketPath string
 
-	// Set of tags for the agent.
-	// Tags is a trivial means for adding extra semantic information to an agent.
-	Tags map[string]string
-
 	// TimelineConfig specifies sqlite timeline configuration.
 	TimelineConfig sqlite.Config
 
@@ -89,6 +85,9 @@ type Config struct {
 
 	// DialRPC is a factory function to create clients to other agents.
 	DialRPC client.DialRPC
+
+	// Cluster interface can be used to poll cluster membership
+	Cluster membership.Cluster
 }
 
 // CheckAndSetDefaults validates this configuration object.
@@ -114,9 +113,6 @@ func (r *Config) CheckAndSetDefaults() error {
 	if len(errors) != 0 {
 		return trace.NewAggregate(errors...)
 	}
-	if r.Tags == nil {
-		r.Tags = make(map[string]string)
-	}
 	if r.Clock == nil {
 		r.Clock = clockwork.NewRealClock()
 	}
@@ -129,9 +125,6 @@ func (r *Config) CheckAndSetDefaults() error {
 type agent struct {
 	// Config is the agent configuration.
 	Config
-
-	// ClusterMembership provides access to cluster membership service.
-	ClusterMembership membership.Cluster
 
 	// ClusterTimeline keeps track of all timeline events in the cluster. This
 	// timeline is only used by members that have the role 'master'.
@@ -206,12 +199,16 @@ func New(config *Config) (*agent, error) {
 		clusterTimeline history.Timeline
 		lastSeen        *ttlmap.TTLMap
 	)
-	if role, ok := config.Tags["role"]; ok && Role(role) == RoleMaster {
+
+	local, err := config.Cluster.Member(config.Name)
+	if err != nil {
+		return nil, trace.Wrap(err, "failed to get local member")
+	}
+	if local.IsMaster() {
 		clusterTimeline, err = initTimeline(config.TimelineConfig, "cluster.db")
 		if err != nil {
 			return nil, trace.Wrap(err, "failed to initialize timeline")
 		}
-
 		lastSeen = ttlmap.NewTTLMap(lastSeenCapacity)
 	}
 
@@ -267,7 +264,7 @@ func (r *agent) Start() error {
 
 // IsMember returns true if this agent is a member of the serf cluster
 func (r *agent) IsMember() bool {
-	members, err := r.ClusterMembership.Members()
+	members, err := r.Cluster.Members()
 	if err != nil {
 		log.WithError(err).Warn("Failed to retrieve members.")
 		return false
@@ -312,7 +309,11 @@ func (r *agent) LocalStatus() *pb.NodeStatus {
 // If no value is stored for the specific member, a timestamp will be
 // initialized for the member with the zero value.
 func (r *agent) LastSeen(name string) (lastSeen time.Time, err error) {
-	if !hasRoleMaster(r.Tags) {
+	local, err := r.Cluster.Member(r.Name)
+	if err != nil {
+		return lastSeen, trace.Wrap(err, "failed to get local member")
+	}
+	if !local.IsMaster() {
 		return lastSeen, trace.BadParameter("requesting last seen timestamp from non master")
 	}
 
@@ -338,7 +339,11 @@ func (r *agent) LastSeen(name string) (lastSeen time.Time, err error) {
 // Attempts to record a last seen timestamp that is older than the currently
 // recorded timestamp will be ignored.
 func (r *agent) RecordLastSeen(name string, timestamp time.Time) error {
-	if !hasRoleMaster(r.Tags) {
+	local, err := r.Cluster.Member(r.Name)
+	if err != nil {
+		return trace.Wrap(err, "failed to get local member")
+	}
+	if !local.IsMaster() {
 		return trace.BadParameter("attempting to record last seen timestamp for non master")
 	}
 
@@ -404,16 +409,25 @@ func (r *agent) runChecks(ctx context.Context) *pb.NodeStatus {
 
 // GetTimeline returns the current cluster timeline.
 func (r *agent) GetTimeline(ctx context.Context, params map[string]string) ([]*pb.TimelineEvent, error) {
-	if hasRoleMaster(r.Tags) {
+	local, err := r.Cluster.Member(r.Name)
+	if err != nil {
+		return nil, trace.Wrap(err, "failed to get local member")
+	}
+	if local.IsMaster() {
 		return r.ClusterTimeline.GetEvents(ctx, params)
 	}
+
 	return nil, trace.BadParameter("requesting cluster timeline from non master")
 }
 
 // RecordClusterEvents records the events into the cluster timeline.
 // Cluster timeline can only be updated if agent has role 'master'.
 func (r *agent) RecordClusterEvents(ctx context.Context, events []*pb.TimelineEvent) error {
-	if hasRoleMaster(r.Tags) {
+	local, err := r.Cluster.Member(r.Name)
+	if err != nil {
+		return trace.Wrap(err, "failed to get local member")
+	}
+	if local.IsMaster() {
 		return r.ClusterTimeline.RecordEvents(ctx, events)
 	}
 	return trace.BadParameter("attempting to update cluster timeline of non master")
@@ -538,7 +552,7 @@ func (r *agent) collectStatus(ctx context.Context) (systemStatus *pb.SystemStatu
 		Timestamp: pb.NewTimeToProto(r.Clock.Now()),
 	}
 
-	members, err := r.ClusterMembership.Members()
+	members, err := r.Cluster.Members()
 	if err != nil {
 		log.WithError(err).Warn("Failed to query serf members.")
 		return nil, trace.Wrap(err, "failed to query serf members")
@@ -585,7 +599,7 @@ L:
 
 // collectLocalStatus executes monitoring tests on the local node.
 func (r *agent) collectLocalStatus(ctx context.Context) (status *pb.NodeStatus, err error) {
-	local, err := r.ClusterMembership.Member(r.Name)
+	local, err := r.Cluster.Member(r.Name)
 	if err != nil {
 		return nil, trace.Wrap(err, "failed to query local serf member")
 	}
@@ -613,7 +627,7 @@ func (r *agent) collectLocalStatus(ctx context.Context) (status *pb.NodeStatus, 
 // getLocalStatus obtains local node status.
 func (r *agent) getLocalStatus(ctx context.Context, respc chan<- *statusResponse) {
 	// TODO: restructure code so that local member is not needed here.
-	local, err := r.ClusterMembership.Member(r.Name)
+	local, err := r.Cluster.Member(r.Name)
 	if err != nil {
 		respc <- &statusResponse{err: err}
 		return
@@ -633,7 +647,7 @@ func (r *agent) getLocalStatus(ctx context.Context, respc chan<- *statusResponse
 
 // notifyMasters pushes new timeline events to all master nodes in the cluster.
 func (r *agent) notifyMasters(ctx context.Context) error {
-	members, err := r.ClusterMembership.Members()
+	members, err := r.Cluster.Members()
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -645,7 +659,7 @@ func (r *agent) notifyMasters(ctx context.Context) error {
 
 	// TODO: async
 	for _, member := range members {
-		if !hasRoleMaster(member.Tags) {
+		if !member.IsMaster() {
 			continue
 		}
 		if err := r.notifyMaster(ctx, member, events); err != nil {
