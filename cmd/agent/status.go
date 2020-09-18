@@ -104,10 +104,10 @@ func status(config statusConfig) (ok bool, err error) {
 	return ok, nil
 }
 
-// history queries the status history of the cluster. RPC configuration
+// statusHistory queries the status history of the cluster. RPC configuration
 // specified by provided config.
 // Returns trie if successfully queried the status history, false - otherwise.
-func history(config rpcConfig) (ok bool, err error) {
+func statusHistory(config rpcConfig) (ok bool, err error) {
 	RPCAddr := fmt.Sprintf("127.0.0.1:%d", config.rpcPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)

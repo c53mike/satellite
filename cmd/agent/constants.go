@@ -24,5 +24,7 @@ const statusTimeout = 5 * time.Second
 // stamp defines default timestamp format.
 const stamp = "Jan _2 15:04:05 UTC"
 
-// monitoringDbFile names the file where agent persists health status history.
-const monitoringDbFile = "monitoring.db"
+const (
+	membershipK8s  = "k8s"
+	membershipSerf = "serf"
+)

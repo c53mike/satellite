@@ -1,5 +1,5 @@
 /*
-Copyright 2016 Gravitational, Inc.
+Copyright 2016-2020 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,18 +19,11 @@ package main
 import (
 	"os"
 
-	"github.com/gravitational/satellite/agent"
-	"github.com/gravitational/satellite/agent/backend"
 	"github.com/gravitational/satellite/agent/backend/influxdb"
-	"github.com/gravitational/satellite/agent/backend/inmemory"
-	"github.com/gravitational/satellite/agent/cache/multiplex"
-	"github.com/gravitational/satellite/cmd"
 	"github.com/gravitational/satellite/lib/history/sqlite"
-	"github.com/gravitational/satellite/monitoring"
 	"github.com/gravitational/trace"
 	"github.com/gravitational/version"
 
-	serf "github.com/hashicorp/serf/client"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
@@ -50,56 +43,48 @@ func run() error {
 		app   = kingpin.New("satellite", "Cluster health monitoring agent")
 		debug = app.Flag("debug", "Enable verbose mode").Bool()
 
-		// `agent` command
-		cagent                      = app.Command("agent", "Start monitoring agent")
-		cagentRPCAddrs              = ListFlag(cagent.Flag("rpc-addr", "List of addresses to bind the RPC listener to (host:port), comma-separated").Default("127.0.0.1:7575"))
-		cagentKubeconfig            = cagent.Flag("kubeconfig", "Absolute path to the kubeconfig file").OverrideDefaultFromEnvar(cmd.EnvKubeconfigFile).Required().String()
-		cagentKubeletAddr           = cagent.Flag("kubelet-addr", "Address of the kubelet").Default("http://127.0.0.1:10248").String()
-		cagentDockerAddr            = cagent.Flag("docker-addr", "Path to the docker daemon socket").Default("/var/run/docker.sock").String()
-		cagentNettestContainerImage = cagent.Flag("nettest-image", "Name of the image to use for networking test").Default("gcr.io/google_containers/nettest:1.8").String()
-		cagentName                  = cagent.Flag("name", "Agent name.  Must be the same as the name of the local serf node").OverrideDefaultFromEnvar(EnvAgentName).String()
-		cagentSerfRPCAddr           = cagent.Flag("serf-rpc-addr", "RPC address of the local serf node").Default("127.0.0.1:7373").String()
-		cagentMetricsAddr           = cagent.Flag("metrics-addr", "Address to listen on for web interface and telemetry for Prometheus metrics").Default("127.0.0.1:7580").String()
-		cagentInitialCluster        = KeyValueListFlag(cagent.Flag("initial-cluster", "Initial cluster configuration as a comma-separated list of peers").OverrideDefaultFromEnvar(EnvInitialCluster))
-		cagentTags                  = KeyValueListFlag(cagent.Flag("tags", "Define a tags as comma-separated list of key:value pairs").OverrideDefaultFromEnvar(EnvTags))
-		disableInterPodCheck        = cagent.Flag("disable-interpod-check", "Disable inter-pod check for single node cluster").Bool()
-		// etcd configuration
-		cagentEtcdServers  = ListFlag(cagent.Flag("etcd-servers", "List of etcd endpoints (http://host:port), comma separated").Default("http://127.0.0.1:2379"))
-		cagentEtcdCAFile   = cagent.Flag("etcd-cafile", "SSL Certificate Authority file used to secure etcd communication").String()
-		cagentEtcdCertFile = cagent.Flag("etcd-certfile", "SSL certificate file used to secure etcd communication").String()
-		cagentEtcdKeyFile  = cagent.Flag("etcd-keyfile", "SSL key file used to secure etcd communication").String()
+		// Launch agent service
+		cagent            = app.Command("agent", "Start monitoring agent")
+		cagentRPCAddrs    = ListFlag(cagent.Flag("rpc-addr", "List of addresses to bind the RPC listener to (host:port), comma-separated").Default("127.0.0.1:7575"))
+		cagentName        = cagent.Flag("name", "Agent name that is used identify this node in the cluster membership service").OverrideDefaultFromEnvar(EnvAgentName).String()
+		cagentMetricsAddr = cagent.Flag("metrics-addr", "Address to listen on for web interface and telemetry for Prometheus metrics").Default("127.0.0.1:7580").String()
+		cagentCAFile      = cagent.Flag("ca-file", "SSL CA certificate for verifying server certificates").ExistingFile()
+		cagentCertFile    = cagent.Flag("cert-file", "SSL certificate for server RPC").ExistingFile()
+		cagentKeyFile     = cagent.Flag("key-file", "SSL certificate key for server RPC").ExistingFile()
+
+		// Membership configuration
+		cagentMembership  = cagent.Flag("membership", "Specifies the cluster membership interface to be used").Default(membershipK8s).Enum(membershipK8s, membershipSerf)
+		cagentSerfRPCAddr = cagent.Flag("serf-rpc-addr", "RPC address of the local serf node").Default("127.0.0.1:7373").String()
+
 		// InfluxDB backend configuration
 		cagentInfluxDatabase = cagent.Flag("influxdb-database", "Database to connect to").OverrideDefaultFromEnvar(EnvInfluxDatabase).String()
 		cagentInfluxUsername = cagent.Flag("influxdb-user", "Username to use for connection").OverrideDefaultFromEnvar(EnvInfluxUser).String()
 		cagentInfluxPassword = cagent.Flag("influxdb-password", "Password to use for connection").OverrideDefaultFromEnvar(EnvInfluxPassword).String()
 		cagentInfluxURL      = cagent.Flag("influxdb-url", "URL of the InfluxDB endpoint").OverrideDefaultFromEnvar(EnvInfluxURL).String()
-		cagentCAFile         = cagent.Flag("ca-file", "SSL CA certificate for verifying server certificates").ExistingFile()
-		cagentCertFile       = cagent.Flag("cert-file", "SSL certificate for server RPC").ExistingFile()
-		cagentKeyFile        = cagent.Flag("key-file", "SSL certificate key for server RPC").ExistingFile()
-		// sqlite config
+
+		// SQLite configuration
 		cagentTimelineDir = cagent.Flag("timeline", "Directory to be used for timeline storage").Default("/tmp/timeline").String()
 		cagentRetention   = cagent.Flag("retention", "Window to retain timeline as a Go duration").Duration()
 
-		// `status` command
-		cstatus            = app.Command("status", "Query cluster status")
-		cstatusRPCPort     = cstatus.Flag("rpc-port", "Local agent RPC port").Default("7575").Int()
-		cstatusPrettyPrint = cstatus.Flag("pretty", "Pretty-print the output").Bool()
-		cstatusLocal       = cstatus.Flag("local", "Query the status of the local node").Bool()
-		cstatusCAFile      = cstatus.Flag("ca-file", "CA certificate for verifying server certificates").ExistingFile()
-		cstatusCertFile    = cstatus.Flag("client-cert-file", "mTLS client certificate file").ExistingFile()
-		cstatusKeyFile     = cstatus.Flag("client-key-file", "mTLS client key file").ExistingFile()
+		// Display cluster status information
+		cstatus         = app.Command("status", "Query cluster status")
+		cstatusRPCPort  = cstatus.Flag("rpc-port", "Local agent RPC port").Default("7575").Int()
+		cstatusCAFile   = cstatus.Flag("ca-file", "CA certificate for verifying server certificates").Default("/var/lib/satellite/ca.pem").ExistingFile()
+		cstatusCertFile = cstatus.Flag("cert-file", "mTLS client certificate file").Default("/var/lib/satellite/cert.pem").ExistingFile()
+		cstatusKeyFile  = cstatus.Flag("key-file", "mTLS client key file").Default("/var/lib/satellite/cert.key").ExistingFile()
 
-		// `history` command
-		chistory         = app.Command("history", "Query cluster status history")
-		chistoryRPCPort  = chistory.Flag("rpc-port", "Local agent RPC port").Default("7575").Int()
-		chistoryCAFile   = chistory.Flag("ca-file", "CA certificate for verifying server certificates").ExistingFile()
-		chistoryCertFile = chistory.Flag("client-cert-file", "mTLS client certificate file").ExistingFile()
-		chistoryKeyFile  = chistory.Flag("client-key-file", "mTLS client key file").ExistingFile()
+		// Display cluster status
+		cstatusCluster       = cstatus.Command("cluster", "Display cluster status").Default()
+		cstatusClusterPretty = cstatusCluster.Flag("pretty", "Pretty-print the output").Bool()
+		cstatusClusterLocal  = cstatusCluster.Flag("local", "Query the status of the local node").Bool()
 
-		// checks command
+		// Display cluster status history
+		cstatusHistory = cstatus.Command("history", "Display cluster status history")
+
+		// Run local compatibility checks
 		cchecks = app.Command("checks", "Run local compatibility checks")
 
-		// `version` command
+		// Display satellite version
 		cversion = app.Command("version", "Display version")
 	)
 
@@ -120,70 +105,29 @@ func run() error {
 
 	switch cmd {
 	case cagent.FullCommand():
-		if *cagentName == "" {
-			*cagentName, err = os.Hostname()
-			if err != nil {
-				return trace.Wrap(err, "agent name not set, failed to set it to hostname")
-			}
-			log.Infof("using hostname `%v` as agent name", *cagentName)
-		}
-		agentRole, ok := (*cagentTags)["role"]
-		if !ok {
-			return trace.Errorf("agent role not set")
-		}
-		cache := inmemory.New()
-		var backends []backend.Backend
-		if *cagentInfluxDatabase != "" {
-			log.Infof("connecting to influxdb database `%v` on %v", *cagentInfluxDatabase,
-				*cagentInfluxURL)
-			influxdb, err := influxdb.New(&influxdb.Config{
+		err = runAgent(&config{
+			name:        *cagentName,
+			rpcAddrs:    *cagentRPCAddrs,
+			caFile:      *cagentCAFile,
+			certFile:    *cagentCertFile,
+			keyFile:     *cagentKeyFile,
+			metricsAddr: *cagentMetricsAddr,
+			membershipConfig: &membershipConfig{
+				membership:  *cagentMembership,
+				serfRPCAddr: *cagentSerfRPCAddr,
+			},
+			sqliteConfig: &sqlite.Config{
+				DBPath:            *cagentTimelineDir,
+				RetentionDuration: *cagentRetention,
+			},
+			influxdbConfig: &influxdb.Config{
 				Database: *cagentInfluxDatabase,
 				Username: *cagentInfluxUsername,
 				Password: *cagentInfluxPassword,
 				URL:      *cagentInfluxURL,
-			})
-			if err != nil {
-				return trace.Wrap(err, "failed to create influxdb backend")
-			}
-			backends = append(backends, influxdb)
-		}
-
-		agentConfig := &agent.Config{
-			Name:        *cagentName,
-			RPCAddrs:    *cagentRPCAddrs,
-			MetricsAddr: *cagentMetricsAddr,
-			Tags:        *cagentTags,
-			Cache:       multiplex.New(cache, backends...),
-			CAFile:      *cagentCAFile,
-			CertFile:    *cagentCertFile,
-			KeyFile:     *cagentKeyFile,
-
-			SerfConfig: serf.Config{
-				Addr: *cagentSerfRPCAddr,
 			},
-			TimelineConfig: sqlite.Config{
-				DBPath:            *cagentTimelineDir,
-				RetentionDuration: *cagentRetention,
-			},
-		}
-		monitoringConfig := &config{
-			role:                 agent.Role(agentRole),
-			serfRPCAddr:          *cagentSerfRPCAddr,
-			serfMemberName:       agentConfig.Name,
-			kubeconfigPath:       *cagentKubeconfig,
-			kubeletAddr:          *cagentKubeletAddr,
-			dockerAddr:           *cagentDockerAddr,
-			disableInterPodCheck: *disableInterPodCheck,
-			etcd: &monitoring.ETCDConfig{
-				Endpoints: *cagentEtcdServers,
-				CAFile:    *cagentEtcdCAFile,
-				CertFile:  *cagentEtcdCertFile,
-				KeyFile:   *cagentEtcdKeyFile,
-			},
-			nettestContainerImage: *cagentNettestContainerImage,
-		}
-		err = runAgent(agentConfig, monitoringConfig, toAddrList(*cagentInitialCluster))
-	case cstatus.FullCommand():
+		})
+	case cstatusCluster.FullCommand():
 		config := statusConfig{
 			rpcConfig: rpcConfig{
 				rpcPort:  *cstatusRPCPort,
@@ -191,18 +135,18 @@ func run() error {
 				certFile: *cstatusCertFile,
 				keyFile:  *cstatusKeyFile,
 			},
-			local:       *cstatusLocal,
-			prettyPrint: *cstatusPrettyPrint,
+			local:       *cstatusClusterLocal,
+			prettyPrint: *cstatusClusterPretty,
 		}
 		_, err = status(config)
-	case chistory.FullCommand():
+	case cstatusHistory.FullCommand():
 		config := rpcConfig{
-			rpcPort:  *chistoryRPCPort,
-			caFile:   *chistoryCAFile,
-			certFile: *chistoryCertFile,
-			keyFile:  *chistoryKeyFile,
+			rpcPort:  *cstatusRPCPort,
+			caFile:   *cstatusCAFile,
+			certFile: *cstatusCertFile,
+			keyFile:  *cstatusKeyFile,
 		}
-		_, err = history(config)
+		_, err = statusHistory(config)
 	case cchecks.FullCommand():
 		err = localChecks()
 	case cversion.FullCommand():
