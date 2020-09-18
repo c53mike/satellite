@@ -143,6 +143,7 @@ func NewClientWithCreds(ctx context.Context, addr string, creds credentials.Tran
 	return &client{
 		AgentClient: pb.NewAgentClient(conn),
 		DebugClient: debugpb.NewDebugClient(conn),
+		PingClient:  pingpb.NewPingClient(conn),
 		conn:        conn,
 		// TODO: provide option to initialize client with more call options.
 		callOptions: []grpc.CallOption{grpc.FailFast(false)},

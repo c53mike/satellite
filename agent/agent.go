@@ -78,16 +78,16 @@ type Config struct {
 	TimelineConfig sqlite.Config
 
 	// Clock to be used for internal time keeping.
-	Clock clockwork.Clock
+	clockwork.Clock
 
 	// Cache is a short-lived storage used by the agent to persist latest health stats.
 	cache.Cache
 
 	// DialRPC is a factory function to create clients to other agents.
-	DialRPC client.DialRPC
+	client.DialRPC
 
 	// Cluster interface can be used to poll cluster membership
-	Cluster membership.Cluster
+	membership.Cluster
 }
 
 // CheckAndSetDefaults validates this configuration object.
@@ -105,7 +105,13 @@ func (r *Config) CheckAndSetDefaults() error {
 		errors = append(errors, trace.BadParameter("certificate key must be provided"))
 	}
 	if r.Name == "" {
-		errors = append(errors, trace.BadParameter("agent name cannot be empty"))
+		errors = append(errors, trace.BadParameter("agent name must be provided"))
+	}
+	if r.Cluster == nil {
+		errors = append(errors, trace.BadParameter("cluster membership must be provided"))
+	}
+	if r.Cache == nil {
+		errors = append(errors, trace.BadParameter("cache must be provided"))
 	}
 	if len(r.RPCAddrs) == 0 {
 		errors = append(errors, trace.BadParameter("at least one RPC address must be provided"))
