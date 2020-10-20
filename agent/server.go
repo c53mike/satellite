@@ -1,5 +1,5 @@
 /*
-Copyright 2016 Gravitational, Inc.
+Copyright 2016-2020 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ type server struct {
 	httpServers []*http.Server
 }
 
-// Status reports the health status of a serf cluster by iterating over the list
+// Status reports the health status of a cluster by iterating over the list
 // of currently active cluster members and collecting their respective health statuses.
 func (r *server) Status(ctx context.Context, req *pb.StatusRequest) (resp *pb.StatusResponse, err error) {
 	status, err := r.agent.Status()
@@ -72,7 +72,7 @@ func (r *server) Status(ctx context.Context, req *pb.StatusRequest) (resp *pb.St
 	return &pb.StatusResponse{Status: status}, nil
 }
 
-// LocalStatus reports the health status of the local serf node.
+// LocalStatus reports the health status of the local node.
 func (r *server) LocalStatus(ctx context.Context, req *pb.LocalStatusRequest) (resp *pb.LocalStatusResponse, err error) {
 	return &pb.LocalStatusResponse{
 		Status: r.agent.LocalStatus(),
@@ -346,8 +346,6 @@ type Agent interface {
 	Start() error
 	// Close stops background activity and releases resources.
 	Close() error
-	// Join makes an attempt to join a cluster specified by the list of peers.
-	Join(peers []string) error
 	// Time reports the current server time.
 	Time() time.Time
 	// LocalStatus reports the health status of the local agent node.
@@ -364,8 +362,6 @@ type Agent interface {
 	RecordClusterEvents(ctx context.Context, events []*pb.TimelineEvent) error
 	// RecordLocalEvents records the events into the local timeline.
 	RecordLocalEvents(ctx context.Context, events []*pb.TimelineEvent) error
-	// IsMember returns whether this agent is already a member of serf cluster
-	IsMember() (ok bool, err error)
 	// GetConfig returns the agent configuration.
 	GetConfig() Config
 	// CheckerRepository allows to add checks to the agent.
