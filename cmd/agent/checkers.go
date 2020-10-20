@@ -19,9 +19,12 @@ package main
 import (
 	"github.com/gravitational/satellite/agent"
 	"github.com/gravitational/satellite/cmd"
+	serfmembership "github.com/gravitational/satellite/lib/membership/serf"
 	"github.com/gravitational/satellite/lib/nethealth"
+	"github.com/gravitational/satellite/lib/rpc/client"
 	"github.com/gravitational/satellite/monitoring"
 	"github.com/gravitational/satellite/monitoring/latency"
+	"github.com/gravitational/satellite/monitoring/timedrift"
 
 	"github.com/gravitational/trace"
 	serf "github.com/hashicorp/serf/client"
@@ -30,8 +33,6 @@ import (
 
 // config represents configuration for setting up monitoring checkers.
 type config struct {
-	// role is the current agent's role
-	role agent.Role
 	// rpcAddrs is the list of listening addresses on RPC agents
 	rpcAddrs []string
 	// agentCAFile sets the file location for the Agent CA cert
@@ -42,8 +43,6 @@ type config struct {
 	agentKeyFile string
 	// serfRPCAddr is the Serf RPC endpoint address
 	serfRPCAddr string
-	// serfMemberName is used as the Node name in the Serf cluster
-	serfMemberName string
 	// kubeconfigPath is the path to the kubeconfig file
 	kubeconfigPath string
 	// kubeletAddr is the address of the kubelet
@@ -61,7 +60,18 @@ type config struct {
 // addCheckers adds checkers to the agent.
 func addCheckers(node agent.Agent, config *config) (err error) {
 	log.Debugf("Monitoring Agent started with config %#v", config)
-	switch config.role {
+
+	local, err := node.GetConfig().Cluster.Member(node.GetConfig().Name)
+	if err != nil {
+		return trace.Wrap(err, "failed to get local member")
+	}
+
+	role, exists := local.Tags["role"]
+	if !exists {
+		return trace.NotFound("local node does not have a role")
+	}
+
+	switch agent.Role(role) {
 	case agent.RoleMaster:
 		client, err := cmd.GetKubeClientFromPath(config.kubeconfigPath)
 		if err != nil {
@@ -76,37 +86,30 @@ func addCheckers(node agent.Agent, config *config) (err error) {
 }
 
 func addToMaster(node agent.Agent, config *config, kubeConfig monitoring.KubeConfig) error {
-	etcdChecker, err := monitoring.EtcdHealth(config.etcd)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	serfClient, err := agent.NewSerfClient(serf.Config{
+	cluster, err := serfmembership.NewCluster(&serf.Config{
 		Addr: config.serfRPCAddr,
 	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	serfMember, err := serfClient.FindMember(config.serfMemberName)
+	etcdChecker, err := monitoring.EtcdHealth(config.etcd)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	timeDriftHealth, err := monitoring.TimeDriftHealth(monitoring.TimeDriftCheckerConfig{
-		CAFile:     node.GetConfig().CAFile,
-		CertFile:   node.GetConfig().CertFile,
-		KeyFile:    node.GetConfig().KeyFile,
-		SerfClient: serfClient,
-		SerfMember: serfMember,
+	timeDriftChecker, err := timedrift.NewChecker(&timedrift.Config{
+		NodeName: node.GetConfig().Name,
+		Cluster:  cluster,
+		DialRPC:  client.DefaultDialRPC(node.GetConfig().CAFile, node.GetConfig().CertFile, node.GetConfig().KeyFile),
 	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
 	latencyChecker, err := latency.NewChecker(&latency.Config{
-		NodeName:      node.GetConfig().NodeName,
-		KubeClient:    kubeConfig.Client,
+		NodeName:      node.GetConfig().Name,
+		Cluster:       cluster,
 		LatencyClient: nethealth.NewClient(nethealth.DefaultNethealthSocket),
 	})
 	if err != nil {
@@ -117,7 +120,7 @@ func addToMaster(node agent.Agent, config *config, kubeConfig monitoring.KubeCon
 	node.AddChecker(monitoring.DockerHealth(config.dockerAddr))
 	node.AddChecker(etcdChecker)
 	node.AddChecker(monitoring.SystemdHealth())
-	node.AddChecker(timeDriftHealth)
+	node.AddChecker(timeDriftChecker)
 	node.AddChecker(latencyChecker)
 
 	if !config.disableInterPodCheck {

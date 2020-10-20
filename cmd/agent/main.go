@@ -1,5 +1,5 @@
 /*
-Copyright 2016 Gravitational, Inc.
+Copyright 2016-2020 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,6 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/gravitational/version"
 
-	serf "github.com/hashicorp/serf/client"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
@@ -57,11 +56,10 @@ func run() error {
 		cagentKubeletAddr           = cagent.Flag("kubelet-addr", "Address of the kubelet").Default("http://127.0.0.1:10248").String()
 		cagentDockerAddr            = cagent.Flag("docker-addr", "Path to the docker daemon socket").Default("/var/run/docker.sock").String()
 		cagentNettestContainerImage = cagent.Flag("nettest-image", "Name of the image to use for networking test").Default("gcr.io/google_containers/nettest:1.8").String()
-		cagentName                  = cagent.Flag("name", "Agent name.  Must be the same as the name of the local serf node").OverrideDefaultFromEnvar(EnvAgentName).String()
+		cagentName                  = cagent.Flag("name", "Agent name that is used to identify this node in the cluster membership service").OverrideDefaultFromEnvar(EnvAgentName).String()
 		cagentSerfRPCAddr           = cagent.Flag("serf-rpc-addr", "RPC address of the local serf node").Default("127.0.0.1:7373").String()
 		cagentMetricsAddr           = cagent.Flag("metrics-addr", "Address to listen on for web interface and telemetry for Prometheus metrics").Default("127.0.0.1:7580").String()
 		cagentInitialCluster        = KeyValueListFlag(cagent.Flag("initial-cluster", "Initial cluster configuration as a comma-separated list of peers").OverrideDefaultFromEnvar(EnvInitialCluster))
-		cagentTags                  = KeyValueListFlag(cagent.Flag("tags", "Define a tags as comma-separated list of key:value pairs").OverrideDefaultFromEnvar(EnvTags))
 		disableInterPodCheck        = cagent.Flag("disable-interpod-check", "Disable inter-pod check for single node cluster").Bool()
 		// etcd configuration
 		cagentEtcdServers  = ListFlag(cagent.Flag("etcd-servers", "List of etcd endpoints (http://host:port), comma separated").Default("http://127.0.0.1:2379"))
@@ -127,10 +125,6 @@ func run() error {
 			}
 			log.Infof("using hostname `%v` as agent name", *cagentName)
 		}
-		agentRole, ok := (*cagentTags)["role"]
-		if !ok {
-			return trace.Errorf("agent role not set")
-		}
 		cache := inmemory.New()
 		var backends []backend.Backend
 		if *cagentInfluxDatabase != "" {
@@ -152,24 +146,17 @@ func run() error {
 			Name:        *cagentName,
 			RPCAddrs:    *cagentRPCAddrs,
 			MetricsAddr: *cagentMetricsAddr,
-			Tags:        *cagentTags,
 			Cache:       multiplex.New(cache, backends...),
 			CAFile:      *cagentCAFile,
 			CertFile:    *cagentCertFile,
 			KeyFile:     *cagentKeyFile,
-
-			SerfConfig: serf.Config{
-				Addr: *cagentSerfRPCAddr,
-			},
 			TimelineConfig: sqlite.Config{
 				DBPath:            *cagentTimelineDir,
 				RetentionDuration: *cagentRetention,
 			},
 		}
 		monitoringConfig := &config{
-			role:                 agent.Role(agentRole),
 			serfRPCAddr:          *cagentSerfRPCAddr,
-			serfMemberName:       agentConfig.Name,
 			kubeconfigPath:       *cagentKubeconfig,
 			kubeletAddr:          *cagentKubeletAddr,
 			dockerAddr:           *cagentDockerAddr,
