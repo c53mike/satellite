@@ -107,6 +107,12 @@ func (r *Config) checkAndSetDefaults() error {
 	if r.Name == "" {
 		errors = append(errors, trace.BadParameter("agent name cannot must be provided"))
 	}
+	if r.Cluster == nil {
+		errors = append(errors, trace.BadParameter("cluster membership must be provided"))
+	}
+	if r.Cache == nil {
+		errors = append(errors, trace.BadParameter("cache must be provided"))
+	}
 	if len(r.RPCAddrs) == 0 {
 		errors = append(errors, trace.BadParameter("at least one RPC address must be provided"))
 	}
